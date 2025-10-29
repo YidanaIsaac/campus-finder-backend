@@ -148,3 +148,49 @@ exports.logout = (req, res) => {
     message: 'Logged out successfully'
   });
 };
+
+// Update User Profile
+exports.updateProfile = async (req, res) => {
+  try {
+    const { name, email, phone, department } = req.body;
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update fields
+    if (name) user.name = name;
+    if (email) user.email = email;
+    if (phone) user.phone = phone;
+    if (department) user.department = department;
+
+    user.updatedAt = Date.now();
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        userType: user.userType,
+        idNumber: user.idNumber,
+        phone: user.phone,
+        department: user.department,
+        profileImage: user.profileImage
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
