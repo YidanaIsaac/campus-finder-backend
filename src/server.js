@@ -3,42 +3,56 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const http = require('http');
 const socketIo = require('socket.io');
+const helmet = require('helmet');
+const compression = require('compression');
 const connectDB = require('./config/database');
+const { errorHandler } = require('./middleware/errorHandler');
+const { testEmailConnection } = require('./utils/emailService');
 
-// Load environment variables
 dotenv.config();
-
-// Connect to MongoDB
 connectDB();
 
-// Initialize Express app
+// Test email connection on startup
+testEmailConnection().then(success => {
+  if (success) {
+    console.log('✅ Email service is ready');
+  } else {
+    console.log('⚠️ Email service not configured or failed to connect');
+  }
+});
+
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL,
-    methods: ['GET', 'POST']
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
-// Middleware
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
+
+app.use(compression());
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Store connected users
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
 const connectedUsers = {};
 
-// Socket.io connection
 io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+  console.log('✅ New client connected:', socket.id);
 
   socket.on('join', (userId) => {
     connectedUsers[userId] = socket.id;
-    console.log(`User ${userId} joined`);
+    console.log(`👤 User ${userId} joined`);
   });
 
   socket.on('disconnect', () => {
@@ -47,46 +61,54 @@ io.on('connection', (socket) => {
         delete connectedUsers[key];
       }
     });
-    console.log('Client disconnected');
+    console.log('❌ Client disconnected');
   });
 });
 
-// Make io accessible to routes
 app.use((req, res, next) => {
   req.io = io;
   req.connectedUsers = connectedUsers;
   next();
 });
 
-// Import routes
 const authRoutes = require('./routes/authRoutes');
 const itemRoutes = require('./routes/itemRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const supportRoutes = require('./routes/supportRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
+const emailRoutes = require('./routes/emailRoutes');
 
-// Use routes
 app.use('/api/auth', authRoutes);
 app.use('/api/items', itemRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/support', supportRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/email', emailRoutes);
 
-// Test route
 app.get('/', (req, res) => {
   res.json({
     success: true,
     message: '🎉 Campus Finder API is running!',
-    version: '1.0.0'
+    version: '2.0.0',
+    endpoints: {
+      auth: '/api/auth',
+      items: '/api/items',
+      notifications: '/api/notifications',
+      support: '/api/support',
+      upload: '/api/upload'
+    }
   });
 });
 
-// Health check route
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
     message: 'Server is healthy',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -94,21 +116,33 @@ app.use((req, res) => {
   });
 });
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({
-    success: false,
-    message: 'Something went wrong!',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
-});
+app.use(errorHandler);
 
-// Start server
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
-  console.log(`📡 API: http://localhost:${PORT}`);
+  console.log('\n🚀 ========================================');
+  console.log(`   Campus Finder API v2.0 - LEGENDARY MODE`);
+  console.log('🚀 ========================================');
+  console.log(`📡 Server: http://localhost:${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔒 Security: ✅ Helmet + Rate Limiting`);
+  console.log(`⚡ Performance: ✅ Compression`);
+  console.log(`🔌 WebSocket: ✅ Socket.IO`);
+  console.log('========================================\n');
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('❌ UNHANDLED REJECTION! Shutting down...');
+  console.error(err.name, err.message);
+  server.close(() => {
+    process.exit(1);
+  });
+});
+
+process.on('SIGTERM', () => {
+  console.log('👋 SIGTERM RECEIVED. Shutting down gracefully');
+  server.close(() => {
+    console.log('💥 Process terminated!');
+  });
 });

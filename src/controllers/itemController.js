@@ -1,19 +1,12 @@
 const LostItem = require('../models/LostItem');
 const FoundItem = require('../models/FoundItem');
+const { AppError } = require('../middleware/errorHandler');
+const { sendItemClaimedNotification, sendMatchNotification } = require('../utils/emailService');
+const User = require('../models/User');
 
-// ===== LOST ITEMS =====
-
-// Create Lost Item
-exports.createLostItem = async (req, res) => {
+exports.createLostItem = async (req, res, next) => {
   try {
-    const { itemName, category, description, location, dateLost, color, brand } = req.body;
-
-    if (!itemName || !category || !description || !location || !dateLost) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide all required fields'
-      });
-    }
+    const { itemName, category, description, location, dateLost, color, brand, images } = req.body;
 
     const lostItem = await LostItem.create({
       userId: req.user.id,
@@ -23,7 +16,20 @@ exports.createLostItem = async (req, res) => {
       location,
       dateLost,
       color: color || '',
-      brand: brand || ''
+      brand: brand || '',
+      images: images || []
+    });
+
+    // Populate user details for matching
+    await lostItem.populate('userId', 'name email');
+
+    // Find and notify potential matches (async, don't wait)
+    notifyPotentialMatches(lostItem, 'lost').then(matchCount => {
+      if (matchCount > 0) {
+        console.log(`Found ${matchCount} potential matches for lost item: ${itemName}`);
+      }
+    }).catch(error => {
+      console.error('Error in background match notification:', error);
     });
 
     res.status(201).json({
@@ -32,17 +38,13 @@ exports.createLostItem = async (req, res) => {
       data: lostItem
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Get All Lost Items
-exports.getAllLostItems = async (req, res) => {
+exports.getAllLostItems = async (req, res, next) => {
   try {
-    const { category, location, search } = req.query;
+    const { category, location, search, page = 1, limit = 20, sort = '-createdAt' } = req.query;
     let query = { status: 'active' };
 
     if (category) query.category = category;
@@ -54,34 +56,35 @@ exports.getAllLostItems = async (req, res) => {
       ];
     }
 
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await LostItem.countDocuments(query);
+
     const lostItems = await LostItem.find(query)
-      .populate('userId', 'name email phone')
-      .sort({ createdAt: -1 });
+      .populate('userId', 'name email phone userType')
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit));
 
     res.status(200).json({
       success: true,
       count: lostItems.length,
+      total,
+      page: parseInt(page),
+      pages: Math.ceil(total / parseInt(limit)),
       data: lostItems
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Get Single Lost Item
-exports.getLostItem = async (req, res) => {
+exports.getLostItem = async (req, res, next) => {
   try {
     const lostItem = await LostItem.findById(req.params.id)
-      .populate('userId', 'name email phone department');
+      .populate('userId', 'name email phone department userType');
 
     if (!lostItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Lost item not found'
-      });
+      return next(new AppError('Lost item not found', 404));
     }
 
     res.status(200).json({
@@ -89,36 +92,27 @@ exports.getLostItem = async (req, res) => {
       data: lostItem
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Update Lost Item
-exports.updateLostItem = async (req, res) => {
+exports.updateLostItem = async (req, res, next) => {
   try {
     let lostItem = await LostItem.findById(req.params.id);
 
     if (!lostItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Lost item not found'
-      });
+      return next(new AppError('Lost item not found', 404));
     }
 
     if (lostItem.userId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this item'
-      });
+      return next(new AppError('Not authorized to update this item', 403));
     }
 
-    lostItem = await LostItem.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true
-    });
+    lostItem = await LostItem.findByIdAndUpdate(
+      req.params.id,
+      { ...req.body, updatedAt: Date.now() },
+      { new: true, runValidators: true }
+    );
 
     res.status(200).json({
       success: true,
@@ -126,30 +120,20 @@ exports.updateLostItem = async (req, res) => {
       data: lostItem
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Delete Lost Item
-exports.deleteLostItem = async (req, res) => {
+exports.deleteLostItem = async (req, res, next) => {
   try {
     const lostItem = await LostItem.findById(req.params.id);
 
     if (!lostItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Lost item not found'
-      });
+      return next(new AppError('Lost item not found', 404));
     }
 
     if (lostItem.userId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to delete this item'
-      });
+      return next(new AppError('Not authorized to delete this item', 403));
     }
 
     await LostItem.findByIdAndDelete(req.params.id);
@@ -159,26 +143,13 @@ exports.deleteLostItem = async (req, res) => {
       message: 'Lost item deleted successfully'
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// ===== FOUND ITEMS =====
-
-// Create Found Item
-exports.createFoundItem = async (req, res) => {
+exports.createFoundItem = async (req, res, next) => {
   try {
-    const { itemName, category, description, location, dateFound, color, brand } = req.body;
-
-    if (!itemName || !category || !description || !location || !dateFound) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide all required fields'
-      });
-    }
+    const { itemName, category, description, location, dateFound, color, brand, images } = req.body;
 
     const foundItem = await FoundItem.create({
       userId: req.user.id,
@@ -188,26 +159,36 @@ exports.createFoundItem = async (req, res) => {
       location,
       dateFound,
       color: color || '',
-      brand: brand || ''
+      brand: brand || '',
+      images: images || []
     });
 
+    // Populate user details for matching
+    await foundItem.populate('userId', 'name email');
+
+    // Send response first
     res.status(201).json({
       success: true,
       message: 'Found item reported successfully',
       data: foundItem
     });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
+
+    // Find and notify potential matches (async, don't wait)
+    notifyPotentialMatches(foundItem, 'found').then(matchCount => {
+      if (matchCount > 0) {
+        console.log(`Found ${matchCount} potential matches for found item: ${itemName}`);
+      }
+    }).catch(error => {
+      console.error('Error in background match notification:', error);
     });
+  } catch (error) {
+    next(error);
   }
 };
 
-// Get All Found Items
-exports.getAllFoundItems = async (req, res) => {
+exports.getAllFoundItems = async (req, res, next) => {
   try {
-    const { category, location, search } = req.query;
+    const { category, location, search, page = 1, limit = 20, sort = '-createdAt' } = req.query;
     let query = { status: 'available' };
 
     if (category) query.category = category;
@@ -219,35 +200,36 @@ exports.getAllFoundItems = async (req, res) => {
       ];
     }
 
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await FoundItem.countDocuments(query);
+
     const foundItems = await FoundItem.find(query)
-      .populate('userId', 'name email phone')
-      .sort({ createdAt: -1 });
+      .populate('userId', 'name email phone userType')
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit));
 
     res.status(200).json({
       success: true,
       count: foundItems.length,
+      total,
+      page: parseInt(page),
+      pages: Math.ceil(total / parseInt(limit)),
       data: foundItems
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Get Single Found Item
-exports.getFoundItem = async (req, res) => {
+exports.getFoundItem = async (req, res, next) => {
   try {
     const foundItem = await FoundItem.findById(req.params.id)
-      .populate('userId', 'name email phone department')
+      .populate('userId', 'name email phone department userType')
       .populate('claimedBy', 'name email');
 
     if (!foundItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Found item not found'
-      });
+      return next(new AppError('Found item not found', 404));
     }
 
     res.status(200).json({
@@ -255,36 +237,27 @@ exports.getFoundItem = async (req, res) => {
       data: foundItem
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Update Found Item
-exports.updateFoundItem = async (req, res) => {
+exports.updateFoundItem = async (req, res, next) => {
   try {
     let foundItem = await FoundItem.findById(req.params.id);
 
     if (!foundItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Found item not found'
-      });
+      return next(new AppError('Found item not found', 404));
     }
 
     if (foundItem.userId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this item'
-      });
+      return next(new AppError('Not authorized to update this item', 403));
     }
 
-    foundItem = await FoundItem.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true
-    });
+    foundItem = await FoundItem.findByIdAndUpdate(
+      req.params.id,
+      { ...req.body, updatedAt: Date.now() },
+      { new: true, runValidators: true }
+    );
 
     res.status(200).json({
       success: true,
@@ -292,30 +265,20 @@ exports.updateFoundItem = async (req, res) => {
       data: foundItem
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Delete Found Item
-exports.deleteFoundItem = async (req, res) => {
+exports.deleteFoundItem = async (req, res, next) => {
   try {
     const foundItem = await FoundItem.findById(req.params.id);
 
     if (!foundItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Found item not found'
-      });
+      return next(new AppError('Found item not found', 404));
     }
 
     if (foundItem.userId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to delete this item'
-      });
+      return next(new AppError('Not authorized to delete this item', 403));
     }
 
     await FoundItem.findByIdAndDelete(req.params.id);
@@ -325,35 +288,54 @@ exports.deleteFoundItem = async (req, res) => {
       message: 'Found item deleted successfully'
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Claim Found Item
-exports.claimFoundItem = async (req, res) => {
+exports.claimFoundItem = async (req, res, next) => {
   try {
-    const foundItem = await FoundItem.findById(req.params.id);
+    const foundItem = await FoundItem.findById(req.params.id)
+      .populate('userId', 'name email');
 
     if (!foundItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Found item not found'
-      });
+      return next(new AppError('Found item not found', 404));
     }
 
     if (foundItem.status === 'claimed') {
-      return res.status(400).json({
-        success: false,
-        message: 'Item already claimed'
-      });
+      return next(new AppError('Item already claimed', 400));
+    }
+
+    if (foundItem.userId._id.toString() === req.user.id) {
+      return next(new AppError('You cannot claim your own found item', 400));
+    }
+
+    // Get claimer details
+    const claimer = await User.findById(req.user.id).select('name email');
+    if (!claimer) {
+      return next(new AppError('User not found', 404));
     }
 
     foundItem.status = 'claimed';
     foundItem.claimedBy = req.user.id;
+    foundItem.updatedAt = Date.now();
     await foundItem.save();
+
+    // Send email notification to the finder
+    try {
+      const emailResult = await sendItemClaimedNotification(
+        foundItem.userId.email,
+        foundItem.itemName,
+        claimer.name,
+        foundItem._id
+      );
+      
+      if (!emailResult.success) {
+        console.warn('Failed to send email notification:', emailResult.error);
+      }
+    } catch (emailError) {
+      console.error('Email notification error:', emailError);
+      // Don't fail the claim if email fails
+    }
 
     res.status(200).json({
       success: true,
@@ -361,30 +343,131 @@ exports.claimFoundItem = async (req, res) => {
       data: foundItem
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
   }
 };
 
-// Get User's Items
-exports.getUserItems = async (req, res) => {
+exports.getUserItems = async (req, res, next) => {
   try {
-    const lostItems = await LostItem.find({ userId: req.user.id });
-    const foundItems = await FoundItem.find({ userId: req.user.id });
+    const lostItems = await LostItem.find({ userId: req.user.id }).sort('-createdAt');
+    const foundItems = await FoundItem.find({ userId: req.user.id }).sort('-createdAt');
 
     res.status(200).json({
       success: true,
       data: {
         lostItems,
-        foundItems
+        foundItems,
+        totals: {
+          lost: lostItems.length,
+          found: foundItems.length
+        }
       }
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    next(error);
+  }
+};
+
+// Helper function to find potential matches
+const findPotentialMatches = async (item, itemType) => {
+  try {
+    const oppositeModel = itemType === 'lost' ? FoundItem : LostItem;
+    const query = {
+      status: itemType === 'lost' ? 'available' : 'active',
+      category: item.category
+    };
+
+    // Find items with similar characteristics
+    const potentialMatches = await oppositeModel.find(query)
+      .populate('userId', 'name email')
+      .limit(10);
+
+    const matches = [];
+    
+    for (const match of potentialMatches) {
+      let score = 0;
+      
+      // Category match (already filtered)
+      score += 30;
+      
+      // Name similarity
+      if (item.itemName.toLowerCase().includes(match.itemName.toLowerCase()) || 
+          match.itemName.toLowerCase().includes(item.itemName.toLowerCase())) {
+        score += 40;
+      }
+      
+      // Location similarity
+      if (item.location.toLowerCase().includes(match.location.toLowerCase()) || 
+          match.location.toLowerCase().includes(item.location.toLowerCase())) {
+        score += 20;
+      }
+      
+      // Color match
+      if (item.color && match.color && 
+          item.color.toLowerCase() === match.color.toLowerCase()) {
+        score += 10;
+      }
+      
+      // Brand match
+      if (item.brand && match.brand && 
+          item.brand.toLowerCase() === match.brand.toLowerCase()) {
+        score += 15;
+      }
+      
+      // Date proximity (within 7 days)
+      const itemDate = itemType === 'lost' ? new Date(item.dateLost) : new Date(item.dateFound);
+      const matchDate = itemType === 'lost' ? new Date(match.dateFound) : new Date(match.dateLost);
+      const daysDiff = Math.abs((itemDate - matchDate) / (1000 * 60 * 60 * 24));
+      
+      if (daysDiff <= 7) {
+        score += 10;
+      }
+      
+      // Only consider it a match if score is above threshold
+      if (score >= 60) {
+        matches.push({ item: match, score });
+      }
+    }
+    
+    return matches.sort((a, b) => b.score - a.score);
+  } catch (error) {
+    console.error('Error finding potential matches:', error);
+    return [];
+  }
+};
+
+// Send match notifications
+const notifyPotentialMatches = async (newItem, itemType) => {
+  try {
+    const matches = await findPotentialMatches(newItem, itemType);
+    
+    for (const match of matches) {
+      try {
+        if (itemType === 'lost') {
+          // New lost item posted, notify users who found similar items
+          await sendMatchNotification(
+            match.item.userId.email,
+            newItem.itemName,
+            newItem.userId?.name || 'Someone',
+            match.item._id
+          );
+        } else {
+          // New found item posted, notify users who lost similar items
+          await sendMatchNotification(
+            match.item.userId.email,
+            newItem.itemName,
+            newItem.userId?.name || 'Someone',
+            newItem._id
+          );
+        }
+      } catch (emailError) {
+        console.error('Error sending match notification:', emailError);
+      }
+    }
+    
+    return matches.length;
+  } catch (error) {
+    console.error('Error in notifyPotentialMatches:', error);
+    return 0;
   }
 };

@@ -194,3 +194,116 @@ exports.updateProfile = async (req, res) => {
     });
   }
 };
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    const user = await User.findById(req.user.id).select('+password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const isMatch = await user.matchPassword(currentPassword);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    user.password = newPassword;
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Password changed successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+exports.uploadProfileImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload an image'
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    user.profileImage = req.file.path;
+    user.updatedAt = Date.now();
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile image updated successfully',
+      profileImage: user.profileImage
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+exports.getStats = async (req, res) => {
+  try {
+    const LostItem = require('../models/LostItem');
+    const FoundItem = require('../models/FoundItem');
+
+    const totalUsers = await User.countDocuments();
+    const totalLostItems = await LostItem.countDocuments();
+    const totalFoundItems = await FoundItem.countDocuments();
+    const activeLostItems = await LostItem.countDocuments({ status: 'active' });
+    const availableFoundItems = await FoundItem.countDocuments({ status: 'available' });
+    const resolvedLostItems = await LostItem.countDocuments({ status: 'resolved' });
+    const claimedFoundItems = await FoundItem.countDocuments({ status: 'claimed' });
+
+    const userLostItems = await LostItem.countDocuments({ userId: req.user.id });
+    const userFoundItems = await FoundItem.countDocuments({ userId: req.user.id });
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        global: {
+          totalUsers,
+          totalLostItems,
+          totalFoundItems,
+          activeLostItems,
+          availableFoundItems,
+          resolvedLostItems,
+          claimedFoundItems
+        },
+        user: {
+          lostItems: userLostItems,
+          foundItems: userFoundItems
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};

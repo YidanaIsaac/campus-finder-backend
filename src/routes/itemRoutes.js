@@ -1,4 +1,13 @@
 const express = require('express');
+const router = express.Router();
+const { protect } = require('../middleware/auth');
+const { upload } = require('../middleware/upload');
+const {
+  validateRequest,
+  lostItemSchema,
+  foundItemSchema
+} = require('../middleware/validator');
+const { apiLimiter } = require('../middleware/rateLimiter');
 const {
   createLostItem,
   getAllLostItems,
@@ -13,26 +22,29 @@ const {
   claimFoundItem,
   getUserItems
 } = require('../controllers/itemController');
-const { protect } = require('../middleware/auth');
 
-const router = express.Router();
+router.use(apiLimiter);
 
-// Lost Items Routes
-router.post('/lost', protect, createLostItem);
-router.get('/lost', getAllLostItems);
-router.get('/lost/:id', getLostItem);
-router.put('/lost/:id', protect, updateLostItem);
-router.delete('/lost/:id', protect, deleteLostItem);
+router.get('/user', protect, getUserItems);
 
-// Found Items Routes
-router.post('/found', protect, createFoundItem);
-router.get('/found', getAllFoundItems);
-router.get('/found/:id', getFoundItem);
-router.put('/found/:id', protect, updateFoundItem);
-router.delete('/found/:id', protect, deleteFoundItem);
-router.patch('/found/:id/claim', protect, claimFoundItem);
+router.route('/lost')
+  .get(getAllLostItems)
+  .post(protect, validateRequest(lostItemSchema), createLostItem);
 
-// User Items
-router.get('/user/items', protect, getUserItems);
+router.route('/lost/:id')
+  .get(getLostItem)
+  .put(protect, updateLostItem)
+  .delete(protect, deleteLostItem);
+
+router.route('/found')
+  .get(getAllFoundItems)
+  .post(protect, validateRequest(foundItemSchema), createFoundItem);
+
+router.route('/found/:id')
+  .get(getFoundItem)
+  .put(protect, updateFoundItem)
+  .delete(protect, deleteFoundItem);
+
+router.put('/found/:id/claim', protect, claimFoundItem);
 
 module.exports = router;
