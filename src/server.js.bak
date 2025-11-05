@@ -94,6 +94,23 @@ app.get('/', (req, res) => {
 });
 
 // Socket.IO connection handling
+io.on('connection', (socket) => {
+  logger.info(`New Socket.IO connection: ${socket.id}`);
+
+  socket.on('join-chat', (chatId) => {
+    socket.join(chatId);
+    logger.info(`Socket ${socket.id} joined chat: ${chatId}`);
+  });
+
+  socket.on('leave-chat', (chatId) => {
+    socket.leave(chatId);
+    logger.info(`Socket ${socket.id} left chat: ${chatId}`);
+  });
+
+  socket.on('disconnect', () => {
+    logger.info(`Socket disconnected: ${socket.id}`);
+  });
+});
 
 // Error logging middleware
 app.use(errorLogger);
@@ -134,39 +151,3 @@ process.on('uncaughtException', (err) => {
 });
 
 module.exports = { app, server, io };
-// Socket.IO Event Handlers
-io.on('connection', (socket) => {
-  logger.info(`New Socket.IO connection: ${socket.id}`);
-
-  // Join user-specific room for notifications
-  socket.on('join-user-room', (userId) => {
-    if (userId) {
-      socket.join(`user_${userId}`);
-      logger.info(`Socket ${socket.id} joined user room: user_${userId}`);
-    }
-  });
-
-  // Join chat room
-  socket.on('join-chat', (chatId) => {
-    socket.join(chatId);
-    logger.info(`Socket ${socket.id} joined chat: ${chatId}`);
-  });
-
-  // Leave chat room
-  socket.on('leave-chat', (chatId) => {
-    socket.leave(chatId);
-    logger.info(`Socket ${socket.id} left chat: ${chatId}`);
-  });
-
-  // Leave user room
-  socket.on('leave-user-room', (userId) => {
-    if (userId) {
-      socket.leave(`user_${userId}`);
-      logger.info(`Socket ${socket.id} left user room: user_${userId}`);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    logger.info(`Socket disconnected: ${socket.id}`);
-  });
-});

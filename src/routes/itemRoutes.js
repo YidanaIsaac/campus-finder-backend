@@ -20,12 +20,16 @@ const {
   updateFoundItem,
   deleteFoundItem,
   claimFoundItem,
-  getUserItems
+  getUserItems,
+  getItemMatches
 } = require('../controllers/itemController');
 
 router.use(apiLimiter);
 
 router.get('/user', protect, getUserItems);
+
+// Get potential matches for an item
+router.get('/matches/:id', protect, getItemMatches);
 
 router.route('/lost')
   .get(getAllLostItems)

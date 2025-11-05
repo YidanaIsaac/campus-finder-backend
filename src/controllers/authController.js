@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const emailService = require('../services/emailService');
 
 // Generate JWT Token
 const generateToken = (id) => {
@@ -44,6 +45,13 @@ exports.register = async (req, res) => {
     // Generate token
     const token = generateToken(user._id);
 
+    // Send welcome email (don't block registration if it fails)
+    try {
+      await emailService.sendWelcomeEmail(user);
+    } catch (emailError) {
+      console.error('Failed to send welcome email:', emailError);
+    }
+
     // Send response
     res.status(201).json({
       success: true,
@@ -53,15 +61,17 @@ exports.register = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        idNumber: user.idNumber,
         userType: user.userType,
-        idNumber: user.idNumber
+        phone: user.phone,
+        department: user.department
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error('Register error:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Error registering user'
+      message: error.message || 'Server error during registration'
     });
   }
 };
@@ -69,18 +79,20 @@ exports.register = async (req, res) => {
 // Login User
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { identifier, password } = req.body;
 
-    // Validate
-    if (!email || !password) {
+    // Validate request
+    if (!identifier || !password) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide email and password'
+        message: 'Please provide email/ID and password'
       });
     }
 
-    // Find user and include password field
-    const user = await User.findOne({ email }).select('+password');
+    // Find user by email or ID number
+    const user = await User.findOne({
+      $or: [{ email: identifier }, { idNumber: identifier }]
+    }).select('+password');
 
     if (!user) {
       return res.status(401).json({
@@ -89,9 +101,8 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Check if password matches
+    // Check password
     const isMatch = await user.matchPassword(password);
-
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -111,51 +122,27 @@ exports.login = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        idNumber: user.idNumber,
         userType: user.userType,
-        idNumber: user.idNumber
+        phone: user.phone,
+        department: user.department,
+        profileImage: user.profileImage
       }
     });
   } catch (error) {
-    console.error(error);
+    console.error('Login error:', error);
     res.status(500).json({
       success: false,
-      message: error.message || 'Error logging in'
+      message: 'Server error during login'
     });
   }
 };
 
 // Get Current User
-exports.getCurrentUser = async (req, res) => {
+exports.getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user.id);
-
-    res.status(200).json({
-      success: true,
-      user
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-// Logout
-exports.logout = (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Logged out successfully'
-  });
-};
-
-// Update User Profile
-exports.updateProfile = async (req, res) => {
-  try {
-    const { name, email, phone, department } = req.body;
-
-    const user = await User.findById(req.user.id);
-
+    
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -163,13 +150,59 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
+    res.status(200).json({
+      success: true,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        idNumber: user.idNumber,
+        userType: user.userType,
+        phone: user.phone,
+        department: user.department,
+        profileImage: user.profileImage,
+        createdAt: user.createdAt
+      }
+    });
+  } catch (error) {
+    console.error('Get me error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+};
+
+// Update Profile
+exports.updateProfile = async (req, res) => {
+  try {
+    const { name, email, phone, department, profileImage } = req.body;
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if email is being changed and is already taken
+    if (email && email !== user.email) {
+      const existingUser = await User.findOne({ email });
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email already in use'
+        });
+      }
+      user.email = email;
+    }
+
     // Update fields
     if (name) user.name = name;
-    if (email) user.email = email;
     if (phone) user.phone = phone;
     if (department) user.department = department;
-
-    user.updatedAt = Date.now();
+    if (profileImage) user.profileImage = profileImage;
 
     await user.save();
 
@@ -180,26 +213,35 @@ exports.updateProfile = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
-        userType: user.userType,
         idNumber: user.idNumber,
+        userType: user.userType,
         phone: user.phone,
         department: user.department,
         profileImage: user.profileImage
       }
     });
   } catch (error) {
+    console.error('Update profile error:', error);
     res.status(500).json({
       success: false,
-      message: error.message
+      message: 'Server error updating profile'
     });
   }
 };
+
+// Change Password
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    const user = await User.findById(req.user.id).select('+password');
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide current and new password'
+      });
+    }
 
+    const user = await User.findById(req.user.id).select('+password');
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -207,8 +249,8 @@ exports.changePassword = async (req, res) => {
       });
     }
 
+    // Check current password
     const isMatch = await user.matchPassword(currentPassword);
-
     if (!isMatch) {
       return res.status(401).json({
         success: false,
@@ -216,94 +258,26 @@ exports.changePassword = async (req, res) => {
       });
     }
 
+    // Update password
     user.password = newPassword;
     await user.save();
+
+    // Send password changed notification (don't block if it fails)
+    try {
+      await emailService.sendPasswordChangedNotification(user);
+    } catch (emailError) {
+      console.error('Failed to send password changed email:', emailError);
+    }
 
     res.status(200).json({
       success: true,
       message: 'Password changed successfully'
     });
   } catch (error) {
+    console.error('Change password error:', error);
     res.status(500).json({
       success: false,
-      message: error.message
-    });
-  }
-};
-
-exports.uploadProfileImage = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please upload an image'
-      });
-    }
-
-    const user = await User.findById(req.user.id);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    user.profileImage = req.file.path;
-    user.updatedAt = Date.now();
-    await user.save();
-
-    res.status(200).json({
-      success: true,
-      message: 'Profile image updated successfully',
-      profileImage: user.profileImage
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-exports.getStats = async (req, res) => {
-  try {
-    const LostItem = require('../models/LostItem');
-    const FoundItem = require('../models/FoundItem');
-
-    const totalUsers = await User.countDocuments();
-    const totalLostItems = await LostItem.countDocuments();
-    const totalFoundItems = await FoundItem.countDocuments();
-    const activeLostItems = await LostItem.countDocuments({ status: 'active' });
-    const availableFoundItems = await FoundItem.countDocuments({ status: 'available' });
-    const resolvedLostItems = await LostItem.countDocuments({ status: 'resolved' });
-    const claimedFoundItems = await FoundItem.countDocuments({ status: 'claimed' });
-
-    const userLostItems = await LostItem.countDocuments({ userId: req.user.id });
-    const userFoundItems = await FoundItem.countDocuments({ userId: req.user.id });
-
-    res.status(200).json({
-      success: true,
-      stats: {
-        global: {
-          totalUsers,
-          totalLostItems,
-          totalFoundItems,
-          activeLostItems,
-          availableFoundItems,
-          resolvedLostItems,
-          claimedFoundItems
-        },
-        user: {
-          lostItems: userLostItems,
-          foundItems: userFoundItems
-        }
-      }
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
+      message: 'Server error changing password'
     });
   }
 };

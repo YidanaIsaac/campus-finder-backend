@@ -22,7 +22,7 @@ const User = require('../models/User');
     await lostItem.populate('userId', 'name email');
 
     // Find and notify potential matches (async, don't wait)
-    matchingService.findMatches(lostItem, 'lost').then(matchCount => {
+    notifyPotentialMatches(lostItem, 'lost').then(matchCount => {
       if (matchCount > 0) {
         console.log(`Found ${matchCount} potential matches for lost item: ${itemName}`);
       }
@@ -172,7 +172,7 @@ exports.createFoundItem = async (req, res, next) => {
     });
 
     // Find and notify potential matches (async, don't wait)
-    matchingService.findMatches(foundItem, 'found').then(matchCount => {
+    notifyPotentialMatches(foundItem, 'found').then(matchCount => {
       if (matchCount > 0) {
         console.log(`Found ${matchCount} potential matches for found item: ${itemName}`);
       }
@@ -435,7 +435,7 @@ const findPotentialMatches = async (item, itemType) => {
 };
 
 // Send match notifications
-const matchingService.findMatches = async (newItem, itemType) => {
+const notifyPotentialMatches = async (newItem, itemType) => {
   try {
     const matches = await findPotentialMatches(newItem, itemType);
     
@@ -465,7 +465,7 @@ const matchingService.findMatches = async (newItem, itemType) => {
     
     return matches.length;
   } catch (error) {
-    console.error('Error in matchingService.findMatches:', error);
+    console.error('Error in notifyPotentialMatches:', error);
     return 0;
   }
 };
@@ -497,28 +497,6 @@ exports.createLostItem = async (req, res, next) => {
       success: true,
       message: 'Lost item reported successfully',
       data: lostItem
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Get potential matches for an item
-exports.getItemMatches = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { type } = req.query; // 'lost' or 'found'
-
-    if (!type || (type !== 'lost' && type !== 'found')) {
-      return next(new AppError('Invalid item type. Must be "lost" or "found"', 400));
-    }
-
-    const matches = await matchingService.getMatchesForItem(id, type);
-
-    res.status(200).json({
-      success: true,
-      count: matches.length,
-      data: matches
     });
   } catch (error) {
     next(error);
